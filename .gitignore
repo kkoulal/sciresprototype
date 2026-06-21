@@ -1,0 +1,33 @@
+# Secrets — never commit
+.env
+.env.example
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Streamlit
+.streamlit/
+
+# Agent memory & downloaded models
+.agent_memory/
+meshy_models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

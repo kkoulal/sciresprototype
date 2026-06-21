@@ -1,0 +1,17 @@
+# Standalone Scires agent prototype — runtime deps for app_agent.py
+python-dotenv>=1.0.0
+streamlit>=1.35.0
+trimesh>=4.0.0
+cadquery>=2.7.0
+vtk>=9.3.0          # parse SimScale VTU result fields (also pulled in by cadquery)
+numpy>=1.24.0
+langgraph>=0.2.0
+httpx>=0.27.0
+qdrant-client>=1.9.0
+neo4j>=5.0.0
+pydantic>=2.7.0
+
+# ── BGE-M3 embedding server (bge_server.py) — install only if you run it here ──
+# FlagEmbedding
+# fastapi
+# uvicorn[standard]
