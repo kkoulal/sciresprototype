@@ -49,6 +49,8 @@ if "cad_error" not in st.session_state:
     st.session_state.cad_error = ""
 if "cad_fallback" not in st.session_state:
     st.session_state.cad_fallback = False
+if "geom_report" not in st.session_state:
+    st.session_state.geom_report = {}
 
 
 # ── Memory helpers ─────────────────────────────────────────────────────────────
@@ -144,6 +146,7 @@ with st.sidebar:
         st.session_state.cad_stl_path = None
         st.session_state.cad_error = ""
         st.session_state.cad_fallback = False
+        st.session_state.geom_report = {}
         st.rerun()
 
 
@@ -332,24 +335,51 @@ def _render_3d_section(sim_package, scenario) -> None:
                 "Please add one more detail in the chat above (e.g. a dimension or material)."
             )
 
-    # ── Step 2: AI CAD solid generation ──────────────────────────────────────
+    # ── Step 2: AI validated geometry (Scientific Model Compiler) ────────────
     if st.session_state.interview_done and st.session_state.current_draft:
-        with st.expander("Step 2 — Generate CAD Solid (AI)", expanded=st.session_state.cad_step_path is None):
+        with st.expander("Step 2 — Generate Validated Geometry (AI)", expanded=st.session_state.cad_step_path is None):
             obj = st.session_state.current_draft
             st.markdown("**Confirmed object:**")
             _render_draft_card(obj)
             st.caption(
-                "An AI engineer writes CadQuery code from your description and builds a "
-                "real, watertight CAD solid (STEP) — ready for physics simulation. "
-                "This is the actual shape that gets simulated."
+                "The compiler builds a Scientific Object Spec from your interview, routes it "
+                "to the right generator (parametric CAD or procedural organic), then runs a "
+                "dual validation loop — a numeric auditor (dimensions, volume, watertightness) "
+                "and a vision critic (multi-view renders judged against your description) — "
+                "iterating with corrections until the geometry passes."
             )
 
             if st.session_state.cad_step_path:
-                if st.session_state.cad_fallback:
+                rep = st.session_state.get("geom_report") or {}
+                if rep:
+                    n_pass = rep.get("numeric_passed", False)
+                    v_score = rep.get("vision_score", 0)
+                    if rep.get("passed"):
+                        st.success(f"✅ Geometry PASSED both audits "
+                                   f"(numeric: PASS · vision: {v_score:.1f}/10 · "
+                                   f"{rep.get('iterations', 1)} iteration(s) · route: {rep.get('route','')})")
+                    else:
+                        st.warning(f"Best candidate after {rep.get('iterations',1)} iteration(s) — "
+                                   f"numeric: {'PASS' if n_pass else 'FAIL'} · vision: {v_score:.1f}/10. "
+                                   "Usable, but review the report below.")
+                    with st.expander("📋 Validation report", expanded=not rep.get("passed", False)):
+                        m = rep.get("measurements", {})
+                        c1, c2, c3 = st.columns(3)
+                        bbox = m.get("bounding_box_mm", [])
+                        if bbox:
+                            c1.metric("Bounding box", " × ".join(f"{x:.0f}" for x in bbox) + " mm")
+                        c2.metric("Watertight", "Yes" if m.get("watertight") else "NO")
+                        c3.metric("Bodies", str(m.get("body_count", "?")))
+                        if rep.get("failures"):
+                            st.error("Numeric failures:\n- " + "\n- ".join(rep["failures"]))
+                        if rep.get("vision_issues"):
+                            st.info("Vision critique:\n- " + "\n- ".join(rep["vision_issues"]))
+                        if rep.get("history"):
+                            st.caption(" · ".join(rep["history"]))
+                elif st.session_state.cad_fallback:
                     st.warning(
                         "The AI couldn't build a valid detailed solid for this description, "
-                        f"so a clean parametric **{obj.shape_type}** was used instead. "
-                        "Try rewording the shape, or edit the CadQuery code below."
+                        f"so a clean parametric **{obj.shape_type}** was used instead."
                     )
                 else:
                     st.success("CAD solid generated and ready to simulate.")
@@ -358,13 +388,14 @@ def _render_3d_section(sim_package, scenario) -> None:
                     _render_3d_viewer(st.session_state.cad_stl_path)
                 import os as _os
                 c1, c2 = st.columns(2)
+                _sim_ext = _os.path.splitext(st.session_state.cad_step_path)[1].upper().lstrip(".")
                 with c1:
                     with open(st.session_state.cad_step_path, "rb") as f:
                         st.download_button(
-                            "⬇ Download STEP (CAD)",
+                            f"⬇ Download {_sim_ext} (simulation geometry)",
                             data=f.read(),
                             file_name=_os.path.basename(st.session_state.cad_step_path),
-                            mime="application/step",
+                            mime="application/octet-stream",
                             key="dl_step",
                         )
                 with c2:
@@ -403,19 +434,66 @@ def _render_3d_section(sim_package, scenario) -> None:
             else:
                 if st.session_state.cad_error:
                     st.error(st.session_state.cad_error)
-                if st.button("Generate CAD Solid", type="primary", key="run_cad"):
-                    from agent.geometry_agent import generate_step
-                    with st.spinner("AI is designing the CAD solid (with self-repair)..."):
+                if st.button("Generate Validated Geometry", type="primary", key="run_cad"):
+                    status = st.empty()
+                    try:
+                        from agent.spec import build_spec, audit_spec
+                        from agent.geometry_router import generate_validated_geometry
+
+                        status.markdown("*Building Scientific Object Spec...*")
+                        spec = build_spec(st.session_state.interview_messages, obj)
+                        audit = audit_spec(spec)
+                        if audit.status == "errors":
+                            raise RuntimeError(
+                                "Spec audit failed: "
+                                + "; ".join(i.message for i in audit.issues if i.severity == "error")
+                            )
+
+                        result = generate_validated_geometry(
+                            spec, obj,
+                            max_iterations=3,
+                            progress_cb=lambda m: status.markdown(f"*{m}*"),
+                        )
+                        status.empty()
+                        if not result or not result.sim_path:
+                            raise RuntimeError("Geometry pipeline produced no candidate: "
+                                               + "; ".join(result.history if result else []))
+
+                        st.session_state.cad_step_path = result.sim_path
+                        st.session_state.cad_stl_path = result.preview_stl
+                        st.session_state.cad_code = result.source
+                        st.session_state.cad_fallback = False
+                        st.session_state.cad_error = ""
+                        st.session_state.geom_report = {
+                            "passed": result.passed,
+                            "route": result.route,
+                            "iterations": result.iterations,
+                            "numeric_passed": result.numeric.passed if result.numeric else False,
+                            "vision_score": result.vision.score if result.vision else 0,
+                            "vision_issues": result.vision.issues if result.vision else [],
+                            "failures": result.numeric.failures if result.numeric else [],
+                            "measurements": result.numeric.measurements.model_dump()
+                            if result.numeric else {},
+                            "history": result.history,
+                        }
+                        st.rerun()
+                    except Exception as e:
+                        status.empty()
+                        # Fallback: legacy single-shot CadQuery generation
                         try:
+                            from agent.geometry_agent import generate_step
                             step, stl, code, fb = generate_step(obj)
                             st.session_state.cad_step_path = step
                             st.session_state.cad_stl_path = stl
                             st.session_state.cad_code = code
-                            st.session_state.cad_fallback = fb
+                            st.session_state.cad_fallback = True
+                            st.session_state.geom_report = {}
                             st.session_state.cad_error = ""
                             st.rerun()
-                        except Exception as e:
-                            st.session_state.cad_error = f"CAD generation failed: {e}"
+                        except Exception as e2:
+                            st.session_state.cad_error = (
+                                f"Geometry pipeline failed: {e} | fallback also failed: {e2}"
+                            )
                             st.rerun()
 
         # ── Optional: Meshy realistic visual render (not used for physics) ──

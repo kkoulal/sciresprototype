@@ -541,11 +541,11 @@ class SimScaleAdapter(SimulationAdapter):
         job.project_id = proj["projectId"]
 
         # Geometry source:
-        #   - If a real CAD file (STEP/IGES) is provided, simulate the TRUE geometry.
-        #   - Otherwise build a clean watertight parametric primitive from the
-        #     captured dimensions. The Meshy mesh (obj_path) is decorative only and
-        #     is NOT FEA-meshable; it stays as the visual preview in the UI.
-        if cad_path and Path(cad_path).suffix.lower() in (".step", ".stp", ".iges", ".igs"):
+        #   - STEP/IGES → true B-rep CAD geometry (parametric route).
+        #   - STL → validated watertight mesh from the organic pipeline (units: METERS,
+        #     matching the adapter's STL inputUnit).
+        #   - Otherwise build a clean parametric primitive from the captured dimensions.
+        if cad_path and Path(cad_path).suffix.lower() in (".step", ".stp", ".iges", ".igs", ".stl"):
             mesh_path = cad_path
         else:
             mesh_path = physical_object_to_stl(physical_object)

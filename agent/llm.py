@@ -88,37 +88,52 @@ def call_llm(
         "stream": stream_callback is not None,
     }
 
-    with httpx.Client(timeout=AGENT_LLM_TIMEOUT, headers=headers) as client:
+    # Transient-network retry (DNS drops / [Errno 11001] getaddrinfo are common on
+    # flaky connections): retry connection-level failures up to 3 times with backoff.
+    import time as _time
+    _last_err = None
+    for _attempt in range(3):
         try:
-            if stream_callback:
-                with client.stream("POST", chat_url, json=payload) as response:
-                    response.raise_for_status()
-                    content = ""
-                    for line in response.iter_lines():
-                        if line.startswith("data: ") and line != "data: [DONE]":
-                            try:
-                                chunk = json.loads(line[6:])
-                                delta_content = chunk["choices"][0]["delta"].get("content", "")
-                                delta_reasoning = chunk["choices"][0]["delta"].get("reasoning_content", "")
-                                combined_delta = delta_reasoning + delta_content
-                                if combined_delta:
-                                    content += combined_delta
-                                    stream_callback(content)
-                            except Exception:
-                                pass
-            else:
-                response = client.post(chat_url, json=payload)
-                response.raise_for_status()
-                result = response.json()
-                content = result["choices"][0]["message"].get("content", "")
-
-                reasoning = result["choices"][0]["message"].get("reasoning_content", "")
-                if reasoning and not content.startswith("<think>"):
-                    content = f"<think>\n{reasoning}\n</think>\n{content}"
-
+            return _do_call(chat_url, headers, payload, stream_callback, extract_json)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, OSError) as e:
+            _last_err = e
+            print(f"LLM network error (attempt {_attempt+1}/3): {e}")
+            _time.sleep(2 * (_attempt + 1))
         except Exception as e:
             print(f"LLM Call Failed: {e}")
             return {} if extract_json else f"Error: {e}"
+    print(f"LLM Call Failed after retries: {_last_err}")
+    return {} if extract_json else f"Error: {_last_err}"
+
+
+def _do_call(chat_url, headers, payload, stream_callback, extract_json):
+    """Single HTTP round-trip. Raises connection-level errors for retry by caller."""
+    with httpx.Client(timeout=AGENT_LLM_TIMEOUT, headers=headers) as client:
+        if stream_callback:
+            with client.stream("POST", chat_url, json=payload) as response:
+                response.raise_for_status()
+                content = ""
+                for line in response.iter_lines():
+                    if line.startswith("data: ") and line != "data: [DONE]":
+                        try:
+                            chunk = json.loads(line[6:])
+                            delta_content = chunk["choices"][0]["delta"].get("content", "")
+                            delta_reasoning = chunk["choices"][0]["delta"].get("reasoning_content", "")
+                            combined_delta = delta_reasoning + delta_content
+                            if combined_delta:
+                                content += combined_delta
+                                stream_callback(content)
+                        except Exception:
+                            pass
+        else:
+            response = client.post(chat_url, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            content = result["choices"][0]["message"].get("content", "")
+
+            reasoning = result["choices"][0]["message"].get("reasoning_content", "")
+            if reasoning and not content.startswith("<think>"):
+                content = f"<think>\n{reasoning}\n</think>\n{content}"
 
     sanitized_content = _sanitize_llm_output(content)
 
